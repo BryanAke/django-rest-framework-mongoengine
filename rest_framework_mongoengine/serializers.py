@@ -164,8 +164,9 @@ class MongoEngineModelSerializer(serializers.ModelSerializer):
     def get_field(self, model_field):
         kwargs = {}
 
-        if isinstance(model_field, (mongoengine.ReferenceField, mongoengine.EmbeddedDocumentField,
-                                     mongoengine.ListField, mongoengine.DynamicField, mongoengine.DictField)):
+        if model_field.__class__ in (mongoengine.ReferenceField, mongoengine.EmbeddedDocumentField,
+                                     mongoengine.ListField, mongoengine.DynamicField,
+                                     mongoengine.DictField, mongoengine.MapField):
             kwargs['model_field'] = model_field
             kwargs['depth'] = self.opts.depth
 
