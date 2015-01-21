@@ -26,6 +26,20 @@ def get_url_kwargs(model_field):
     return {
         'view_name': '%s-detail' % (model_field.__name__.lower())
     }
+    
+    
+class DocumentHyperlinkedIdentityField(HyperlinkedIdentityField):
+    lookup_field = 'id'
+    
+    
+class DocumentHyperlinkedRelatedField(HyperlinkedRelatedField):
+    lookup_field = 'id'
+    def initialize(self, parent, field_name):
+        super(RelatedField, self).initialize(parent, field_name)
+        if self.queryset is None and not self.read_only:
+            manager = getattr(self.parent.opts.model, self.source or field_name)
+            self.queryset = manager.document_type.objects.all()
+
 
 def raise_errors_on_nested_writes(method_name, serializer, validated_data):
     """
@@ -281,7 +295,7 @@ class DocumentSerializer(serializers.ModelSerializer):
                 
             elif field_name == api_settings.URL_FIELD_NAME:
                 # Create the URL field.
-                field_cls = HyperlinkedIdentityField
+                field_cls = DocumentHyperlinkedIdentityField
                 kwargs = get_url_kwargs(model)
 
             else:
@@ -494,14 +508,6 @@ class EmbeddedDocumentSerializer(DocumentSerializer):
             list(model_info.forward_relations.keys())
         )
         
-class DocumentHyperlinkedRelatedField(HyperlinkedRelatedField):
-    lookup_field = 'id'
-    def initialize(self, parent, field_name):
-        super(RelatedField, self).initialize(parent, field_name)
-        if self.queryset is None and not self.read_only:
-            manager = getattr(self.parent.opts.model, self.source or field_name)
-            self.queryset = manager.document_type.objects.all()
-
 class HyperlinkedModelSerializer(DocumentSerializer):
     """
     A type of `ModelSerializer` that uses hyperlinked relationships instead
