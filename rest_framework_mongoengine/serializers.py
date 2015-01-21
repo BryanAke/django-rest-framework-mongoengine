@@ -493,7 +493,14 @@ class EmbeddedDocumentSerializer(DocumentSerializer):
             list(model_info.fields.keys()) +
             list(model_info.forward_relations.keys())
         )
-
+        
+class DocumentHyperlinkedRelatedField(HyperlinkedRelatedField):
+    lookup_field = 'id'
+    def initialize(self, parent, field_name):
+        super(RelatedField, self).initialize(parent, field_name)
+        if self.queryset is None and not self.read_only:
+            manager = getattr(self.parent.opts.model, self.source or field_name)
+            self.queryset = manager.document_type.objects.all()
 
 class HyperlinkedModelSerializer(DocumentSerializer):
     """
@@ -502,7 +509,7 @@ class HyperlinkedModelSerializer(DocumentSerializer):
     * A 'url' field is included instead of the 'id' field.
     * Relationships to other instances are hyperlinks, instead of primary keys.
     """
-    _related_class = HyperlinkedRelatedField
+    _related_class = DocumentHyperlinkedRelatedField
 
     def _get_default_field_names(self, declared_fields, model_info):
         return (
