@@ -11,7 +11,7 @@ from collections import OrderedDict
 
 from rest_framework import serializers
 from rest_framework import fields as drf_fields
-from rest_framework.utils.field_mapping import get_url_kwargs
+#from rest_framework.utils.field_mapping import get_url_kwargs
 from rest_framework_mongoengine.utils import get_field_info
 from rest_framework_mongoengine.fields import (ReferenceField, ListField, EmbeddedDocumentField, DynamicField, MapField,
                                                ObjectIdField, DocumentField)
@@ -22,6 +22,10 @@ import copy
 from bson import ObjectId, DBRef
 import re
 
+def get_url_kwargs(model_field):
+    return {
+        'view_name': '%ss-detail' % (model_field.__name__.lower())
+    }
 
 def raise_errors_on_nested_writes(method_name, serializer, validated_data):
     """
