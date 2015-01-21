@@ -24,7 +24,7 @@ import re
 
 def get_url_kwargs(model_field):
     return {
-        'view_name': '%ss-detail' % (model_field.__name__.lower())
+        'view_name': '%s-detail' % (model_field.__name__.lower())
     }
 
 def raise_errors_on_nested_writes(method_name, serializer, validated_data):
