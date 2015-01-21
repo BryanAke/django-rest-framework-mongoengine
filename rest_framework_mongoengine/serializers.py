@@ -11,6 +11,7 @@ from collections import OrderedDict
 
 from rest_framework import serializers
 from rest_framework import fields as drf_fields
+from rest_framework.utils.field_mapping import get_url_kwargs
 from rest_framework_mongoengine.utils import get_field_info
 from rest_framework_mongoengine.fields import (ReferenceField, ListField, EmbeddedDocumentField, DynamicField, MapField,
                                                ObjectIdField, DocumentField)
