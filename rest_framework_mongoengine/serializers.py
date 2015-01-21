@@ -273,6 +273,11 @@ class DocumentSerializer(serializers.ModelSerializer):
                 # Create a read only field for model methods and properties.
                 field_cls = drf_fields.ReadOnlyField
                 kwargs = {}
+                
+            elif field_name == api_settings.URL_FIELD_NAME:
+                # Create the URL field.
+                field_cls = HyperlinkedIdentityField
+                kwargs = get_url_kwargs(model)
 
             else:
                 raise ImproperlyConfigured(
