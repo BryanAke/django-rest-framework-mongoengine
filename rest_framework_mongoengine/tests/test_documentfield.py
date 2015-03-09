@@ -16,8 +16,20 @@ class TestDocumentSerializer(TestCase):
         }
 
     def test_lazy_fields(self):
-        self.assertEqual(0, 1)
-
+        #fields attribute shouldn't populate until needed
+        self.assertTrue(False)
 
     def test_fields_from_serializer(self):
+        #serializer field mapping should be passed up to the serializer.
         self.assertTrue(False)
+
+    def test_get_attribute(self):
+        #get_attribute step should get the relevant attributes from the model
+        self.assertTrue(False)
+
+    def test_to_representation(self):
+        #to_representation gets the attributes from get_attribute and turns them into the
+        #serialized representation of the attribute.
+        self.assertTrue(False)
+
+    def test_
