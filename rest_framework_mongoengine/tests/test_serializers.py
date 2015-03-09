@@ -18,7 +18,6 @@ class Job(me.Document):
 class JobSerializer(DocumentSerializer):
     id = s.Field()
     title = s.CharField()
-    status = s.ChoiceField(read_only=True)
     sort_weight = s.IntegerField(source='weight')
 
 
@@ -88,14 +87,14 @@ class CategorySerializer(DocumentSerializer):
 
 class SomeObjectSerializer(DocumentSerializer):
     location = LocationSerializer(source='loc')
-    categories = CategorySerializer(many=True, allow_add_remove=True)
+    categories = CategorySerializer()
 
     class Meta:
         model = SomeObject
         fields = ('name', 'location', 'categories')
 
 
-class TestRestoreEmbedded(TestCase):
+class TestCreateEmbedded(TestCase):
     def setUp(self):
         self.data = {
             'name': 'some anme', 
@@ -106,7 +105,9 @@ class TestRestoreEmbedded(TestCase):
             'codes': [{'key': 'mykey1'}]
         }
 
-    def test_restore_new(self):
+    def test_validate_and_create(self):
+        #passing values to serializer via data paramter
+        #should validate data,
         serializer = SomeObjectSerializer(data=self.data)    
         self.assertTrue(serializer.is_valid())
         obj = serializer.object 
@@ -122,7 +123,13 @@ class TestRestoreEmbedded(TestCase):
         # codes are not listed, should not be updatable
         self.assertEqual(0, len(obj.codes))
 
-    def test_restore_update(self):        
+    def test_invalid_data(self):
+        #serializer fed invalid data should not populate a model.
+        self.assertTrue(False)
+
+    def test_update(self):
+        #passing data to serializer populated by an instance
+        #values specified should should populate correctly.
         data = self.data
         instance = SomeObject(
             name='original', 
@@ -149,4 +156,28 @@ class TestRestoreEmbedded(TestCase):
         self.assertEqual(2, len(obj.categories))
         self.assertEqual('category_2', obj.categories[1].id)
         self.assertEqual(0, obj.categories[1].counter)
+
+    def test_custom_field_overriding(self):
+        #we should be able to provide a field to override the default mapping.
+        self.assertTrue(False)
+
+    def test_field_population(self):
+        #fields should be generated and populated lazily based on model.
+        self.assertTrue(False)
+
+    def test_declared_fields(self):
+        #fields declared on serializer should be instantiated as defined, not based on defaults from model.
+        self.assertTrue(False)
+
+    def test_extra_kwargs(self):
+        #Extra kwargs defined in Serializer Meta should be passed to fields.
+        self.assertTrue(False)
+
+    def test_depth_flow(self):
+        #Depth options.
+        self.assertTrue(False)
+
+    def test_no_dereference(self):
+        #Option to avoid dereferencing objects, which would fire additional queries.
+        self.assertTrue(False)
 
