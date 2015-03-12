@@ -31,5 +31,3 @@ class TestDocumentSerializer(TestCase):
         #to_representation gets the attributes from get_attribute and turns them into the
         #serialized representation of the attribute.
         self.assertTrue(False)
-
-    def test_
