@@ -5,10 +5,10 @@ from django.utils.decorators import classonlymethod
 from rest_framework import views, generics, mixins
 from rest_framework import mixins
 from rest_framework.viewsets import ViewSetMixin
-from rest_framework_mongoengine.generics import MongoAPIView
+from rest_framework_mongoengine.generics import GenericAPIView
 
 
-class MongoGenericViewSet(ViewSetMixin, MongoAPIView):
+class MongoGenericViewSet(ViewSetMixin, GenericAPIView):
     """
     The MongoGenericViewSet class does not provide any actions by default,
     but does include the base set of generic view behavior, such as

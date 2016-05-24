@@ -31,10 +31,7 @@ def ref_to_mongo(func):
         if not RESOLVE_URI:
             return id
         else:
-            try:
-                doc_type = self.document_type._class_name
-            except AttributeError:
-                doc_type = self.name
+            doc_type = getattr(self.document_type, '_class_name', self.name)
             return NAMESPACE(doc_type, id)
 
     return to_mongo

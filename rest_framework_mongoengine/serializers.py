@@ -1,409 +1,723 @@
 from __future__ import unicode_literals
-import warnings
-from django.core.exceptions import ValidationError
-from mongoengine.errors import ValidationError
-from rest_framework import serializers
-from rest_framework import fields
-import mongoengine
-from mongoengine.base import BaseDocument
-from mongoengine.context_managers import no_dereference
-from django.core.paginator import Page
+
+from mongoengine.errors import ValidationError as me_ValidationError
+from mongoengine import fields as me_fields
+from mongoengine.base.common import get_document
+
 from django.db import models
 from django.forms import widgets
-from django.utils.datastructures import SortedDict
-from rest_framework.compat import get_concrete_model
-from .fields import ReferenceField, ListField, EmbeddedDocumentField, DynamicField, MapField
+from django.core.exceptions import ImproperlyConfigured
+
+from collections import OrderedDict
+import inspect
+
+from rest_framework import serializers
+from rest_framework import fields as drf_fields
+from rest_framework.fields import SkipField
 from rest_framework.settings import api_settings
-from rest_framework.relations import HyperlinkedRelatedField, HyperlinkedIdentityField, RelatedField
-from bson import DBRef
-from .ld import Namespaced
-from rest_framework.reverse import reverse
-from django.core.urlresolvers import resolve, get_script_prefix, NoReverseMatch
-from mongoengine.errors import DoesNotExist
-from django.core import validators
-
-field_mapping = {
-    mongoengine.FloatField: fields.FloatField,
-    mongoengine.IntField: fields.IntegerField,
-    mongoengine.DateTimeField: fields.DateTimeField,
-    mongoengine.EmailField: fields.EmailField,
-    mongoengine.URLField: fields.URLField,
-    mongoengine.StringField: fields.CharField,
-    mongoengine.BooleanField: fields.BooleanField,
-    mongoengine.FileField: fields.FileField,
-    mongoengine.ImageField: fields.ImageField,
-    mongoengine.ObjectIdField: fields.Field,
-    mongoengine.ReferenceField: ReferenceField,
-    mongoengine.ListField: ListField,
-    mongoengine.EmbeddedDocumentField: EmbeddedDocumentField,
-    mongoengine.DynamicField: DynamicField,
-    mongoengine.DecimalField: fields.DecimalField,
-    mongoengine.MapField: MapField,
-    mongoengine.DictField: DynamicField,
-}
-
-attribute_dict = {
-    mongoengine.StringField: ['max_length'],
-    mongoengine.DecimalField: ['min_value', 'max_value'],
-    mongoengine.EmailField: ['max_length'],
-    mongoengine.FileField: ['max_length'],
-    mongoengine.ImageField: ['max_length'],
-    mongoengine.URLField: ['max_length'],
-}
+from rest_framework_mongoengine.utils import get_field_info, FieldInfo, PolymorphicChainMap
+from rest_framework_mongoengine.fields import (ReferenceField, ListField, EmbeddedDocumentField, DynamicField,
+                                               ObjectIdField, DocumentField, BinaryField, BaseGeoField, DictField, MapField, FileField, PolymorphicEmbeddedDocumentField)
+import copy
+from mongoengine.errors import NotRegistered
 
 
-class MongoEngineModelSerializerOptions(serializers.ModelSerializerOptions):
+def raise_errors_on_nested_writes(method_name, serializer, validated_data):
     """
-    Meta class options for MongoEngineModelSerializer
+    *** inherited from DRF 3, altered for EmbeddedDocumentSerializer to work automagically ***
+
+    Give explicit errors when users attempt to pass writable nested data.
+
+    If we don't do this explicitly they'd get a less helpful error when
+    calling `.save()` on the serializer.
+
+    We don't *automatically* support these sorts of nested writes because
+    there are too many ambiguities to define a default behavior.
+
+    Eg. Suppose we have a `UserSerializer` with a nested profile. How should
+    we handle the case of an update, where the `profile` relationship does
+    not exist? Any of the following might be valid:
+
+    * Raise an application error.
+    * Silently ignore the nested part of the update.
+    * Automatically create a profile instance.
     """
-    def __init__(self, meta):
-        super(MongoEngineModelSerializerOptions, self).__init__(meta)
-        self.depth = getattr(meta, 'depth', 10)
+
+    # Ensure we don't have a writable nested field. For example:
+    #
+    # class UserSerializer(ModelSerializer):
+    #     ...
+    #     profile = ProfileSerializer()
+    assert not any(
+        isinstance(field, serializers.BaseSerializer) and
+        not isinstance(field, EmbeddedDocumentSerializer) and
+        (key in validated_data)
+        for key, field in serializer.fields.items()
+    ), (
+        'The `.{method_name}()` method does not support writable nested'
+        'fields by default.\nWrite an explicit `.{method_name}()` method for '
+        'serializer `{module}.{class_name}`, or set `read_only=True` on '
+        'nested serializer fields.'.format(
+            method_name=method_name,
+            module=serializer.__class__.__module__,
+            class_name=serializer.__class__.__name__
+        )
+    )
+
+    # Ensure we don't have a writable dotted-source field. For example:
+    #
+    # class UserSerializer(ModelSerializer):
+    #     ...
+    #     address = serializer.CharField('profile.address')
+    assert not any(
+        '.' in field.source and (key in validated_data)
+        for key, field in serializer.fields.items()
+    ), (
+        'The `.{method_name}()` method does not support writable dotted-source '
+        'fields by default.\nWrite an explicit `.{method_name}()` method for '
+        'serializer `{module}.{class_name}`, or set `read_only=True` on '
+        'dotted-source serializer fields.'.format(
+            method_name=method_name,
+            module=serializer.__class__.__module__,
+            class_name=serializer.__class__.__name__
+        )
+    )
 
 
-class MongoEngineModelSerializer(serializers.ModelSerializer):
+class DocumentSerializer(serializers.ModelSerializer):
     """
+
     Model Serializer that supports Mongoengine
+    DRF - 3 comes with pretty cool new features and more elegant and readable codebase.
+    So it was not that hard to hack the way through mongoengine compability.
+
+    To users:
+        MongoEngineModelSerializer is now DocumentSerializer
+        everything works on MongoEngineModelSerializer works on DocumentSerializer as well, even more performant.
+
+        You can also use nested DocumentSerializers, just like on DRF3 ModelSerializer.
+
+        DocumentSerializer takes care of EmbeddedDocumentField, ListField, ReferenceField automatically.
+        If you want some custom behavior, you should implement
+        a nested serializer with .create() .update() methods set up
+
+    To contributors:
+         Before start of development, please consider reading DRF 3 ModelSerializer implementation
+
+         - The process order like is_valid() -> run_validation() -> to_internal_value() is crucial when
+         implementing custom behavior.
+
+         - Important to understand that all Mongoengine Fields are converted to DRF fields on the go.
+         The fields that require custom implementation(like ListField), we convert them to our
+         custom DocumentField(or any subclass).
+
+         All contributions are welcome.
+
+         Here is a to-do list if you consider contributing
+            - implement better get_fields()
+            - make sure all kwargs (regarding validation/serialization) on models
+              passes to serializers on get_field_kwargs()
+            - check and implement ChoiceField on DRF
+            - check if DRF validators work correctly
+            - write tests
+            - check and resolve issues
+            - maybe a better way to implement transform_%s methods on fields.py
+
     """
-    _options_class = MongoEngineModelSerializerOptions
 
-    def perform_validation(self, attrs):
+
+
+    def __init__(self, instance=None, data=serializers.empty, **kwargs):
+        super(DocumentSerializer, self).__init__(instance=instance, data=data, **kwargs)
+        if not hasattr(self.Meta, 'model'):
+            raise AssertionError('You should set `model` attribute on %s.' % type(self).__name__)
+
+    MAX_RECURSION_DEPTH = 5  # default value of depth
+    field_mapping = {
+        me_fields.FloatField: drf_fields.FloatField,
+        me_fields.IntField: drf_fields.IntegerField,
+        me_fields.DateTimeField: drf_fields.DateTimeField,
+        me_fields.EmailField: drf_fields.EmailField,
+        me_fields.URLField: drf_fields.URLField,
+        me_fields.StringField: drf_fields.CharField,
+        me_fields.BooleanField: drf_fields.BooleanField,
+        me_fields.ImageField: drf_fields.ImageField,
+        me_fields.UUIDField: drf_fields.CharField,
+        me_fields.DecimalField: drf_fields.DecimalField
+    }
+
+    _drfme_field_mapping = {
+        me_fields.ObjectIdField: ObjectIdField,
+        me_fields.ReferenceField: ReferenceField,
+        me_fields.ListField: ListField,
+        me_fields.EmbeddedDocumentField: PolymorphicEmbeddedDocumentField,
+        me_fields.DynamicField: DynamicField,
+        me_fields.DictField: DictField,
+        me_fields.MapField: MapField,
+        me_fields.BinaryField: BinaryField,
+        me_fields.GeoPointField: BaseGeoField,
+        me_fields.PointField: BaseGeoField,
+        me_fields.PolygonField: BaseGeoField,
+        me_fields.LineStringField: BaseGeoField,
+        me_fields.FileField: FileField,
+    }
+
+    field_mapping.update(_drfme_field_mapping)
+    embedded_document_serializer_fields = []
+
+    def get_field_mapping(self, field):
+        #given a field, look up the proper default drf or drf-me field
+
+        #convert to class, if we're passed an instance, as above.
+        if not isinstance(field, type):
+            field = type(field)
+
+        for cls in inspect.getmro(field):
+            if cls in self.field_mapping:
+                return self.field_mapping[cls]
+        return None
+
+    def is_drfme_field(self, field):
         """
-        Rest Framework built-in validation + related model validations
+        :param field: Model field instance (or class)
+        :return: True if field maps to a subclass of DocumentField, otherwise returns False.
         """
-        for field_name, field in self.fields.items():
-            if field_name in self._errors:
-                continue
 
-            source = field.source or field_name
-            if self.partial and source not in attrs:
-                continue
+        #We will need the field class to look it up, so make sure we weren't passed one initially
+        #and convert it if needed.
+        if not isinstance(field, type):
+            field = type(field)
 
-            if field_name in attrs and hasattr(field, 'model_field'):
-                try:
-                    attr = attrs[field_name]
-                    if attr not in validators.EMPTY_VALUES:
-                        field.model_field.validate(attr)
-                except ValidationError as err:
-                    self._errors[field_name] = str(err)
+        #if this is a key in DRFME_FIELD_MAPPING, return True
+        if field in self._drfme_field_mapping:
+            return True
+        elif set(inspect.getmro(field)).intersection(self._drfme_field_mapping.keys()):
+            #if the set of field's parent classes has an intersection with the keys in DRFME_FIELD_MAPPING
+            #i.e. One of our parent classes is a type that needs handling with a DocumentField
+            return True
+        return False
 
-            try:
-                validate_method = getattr(self, 'validate_%s' % field_name, None)
-                if validate_method:
-                    attrs = validate_method(attrs, source)
-            except serializers.ValidationError as err:
-                self._errors[field_name] = self._errors.get(field_name, []) + list(err.messages)
+    def get_base_kwargs(self):
+        return {}
 
-        if not self._errors:
-            try:
-                attrs = self.validate(attrs)
-            except serializers.ValidationError as err:
-                if hasattr(err, 'message_dict'):
-                    for field_name, error_messages in err.message_dict.items():
-                        self._errors[field_name] = self._errors.get(field_name, []) + list(error_messages)
-                elif hasattr(err, 'messages'):
-                    self._errors['non_field_errors'] = err.messages
 
-        return attrs
+    def get_validators(self):
+        validators = getattr(getattr(self, 'Meta', None), 'validators', [])
+        return validators
 
-    def restore_object(self, attrs, instance=None):
-        if instance is not None:
-
-            dynamic_fields = self.get_dynamic_fields(instance)
-            all_fields = dict(dynamic_fields, **self.fields)
-            # import ipdb; ipdb.set_trace()
-
-            for key, val in attrs.items():
-                field = all_fields.get(key)
-                if not field or field.read_only:
-                    continue
-
-                key = getattr(field, 'source', None ) or key
-                try:
-                    setattr(instance, key, val)
-                except ValueError:
-                    self._errors[key] = self.error_messages['required']
-
-        else:
-            instance = self.opts.model(**attrs)
-        return instance
-
-    def get_default_fields(self):
-        cls = self.opts.model
-        opts = get_concrete_model(cls)
-        fields = []
-        fields += [getattr(opts, field) for field in cls._fields_ordered]
-
-        ret = SortedDict()
-
-        for model_field in fields:
-            if isinstance(model_field, mongoengine.ObjectIdField):
-                field = self.get_pk_field(model_field)
-            else:
-                field = self.get_field(model_field)
-
-            if field:
-                field.initialize(parent=self, field_name=model_field.name)
-                ret[model_field.name] = field
-
-        for field_name in self.opts.read_only_fields:
-            assert field_name in ret,\
-            "read_only_fields on '%s' included invalid item '%s'" %\
-            (self.__class__.__name__, field_name)
-            ret[field_name].read_only = True
-
-        return ret
-
-    def get_dynamic_fields(self, obj):
-        dynamic_fields = {}
-        if obj is not None and obj._dynamic:
-            for key, value in obj._dynamic_fields.items():
-                dynamic_fields[key] = self.get_field(value)
-        return dynamic_fields
-
-    def get_field(self, model_field):
+    def get_field_kwargs(self, model_field):
+        """
+        Get kwargs that will be used for validation/serialization
+        """
         kwargs = {}
 
-        if model_field.__class__ in (mongoengine.ReferenceField, mongoengine.EmbeddedDocumentField,
-                                     mongoengine.ListField, mongoengine.DynamicField,
-                                     mongoengine.DictField, mongoengine.MapField):
+        #kwargs to pass to all drfme fields
+        #this includes lists, dicts, embedded documents, etc
+        #depth included for flow control during recursive serialization.
+        if self.is_drfme_field(model_field):
             kwargs['model_field'] = model_field
-            kwargs['depth'] = self.opts.depth
+            kwargs['depth'] = getattr(self.Meta, 'depth', self.MAX_RECURSION_DEPTH)
 
-        if not model_field.__class__ == mongoengine.ObjectIdField:
+        if type(model_field) is me_fields.ObjectIdField:
+            kwargs['required'] = False
+        else:
             kwargs['required'] = model_field.required
-
-        if model_field.__class__ == mongoengine.EmbeddedDocumentField:
-            kwargs['document_type'] = model_field.document_type
 
         if model_field.default:
             kwargs['required'] = False
             kwargs['default'] = model_field.default
 
-        if model_field.__class__ == models.TextField:
-            kwargs['widget'] = widgets.Textarea
+        attribute_dict = {
+            me_fields.StringField: ['max_length'],
+            me_fields.DecimalField: ['min_value', 'max_value'],
+            me_fields.EmailField: ['max_length'],
+            me_fields.FileField: ['max_length'],
+            me_fields.URLField: ['max_length'],
+            me_fields.BinaryField: ['max_bytes']
+        }
 
+        #append any extra attributes based on the dict above, as needed.
         if model_field.__class__ in attribute_dict:
             attributes = attribute_dict[model_field.__class__]
             for attribute in attributes:
-                kwargs.update({attribute: getattr(model_field, attribute)})
+                if hasattr(model_field, attribute):
+                    kwargs.update({attribute: getattr(model_field, attribute)})
 
-        try:
-            return field_mapping[model_field.__class__](**kwargs)
-        except KeyError:
-            # Defaults to WritableField if not in field mapping
-            return fields.WritableField(**kwargs)
+        if model_field.__class__ is me_fields.StringField:
+            kwargs['allow_null'] = not kwargs['required']
+            kwargs['allow_blank'] = not kwargs['required']
 
-    def to_native(self, obj):
-        """
-        Rest framework built-in to_native + transform_object
-        """
-        ret = self._dict_class()
-        ret.fields = self._dict_class()
+        return kwargs
 
-        #Dynamic Document Support
-        dynamic_fields = self.get_dynamic_fields(obj)
-        all_fields = self._dict_class()
-        all_fields.update(self.fields)
-        all_fields.update(dynamic_fields)
-        with Namespaced(lookup_uri(self)):
-            for field_name, field in all_fields.items():
-                if field.read_only and obj is None:
-                    continue
-                field.initialize(parent=self, field_name=field_name)
-                key = self.get_field_key(field_name)
-                value = field.field_to_native(obj, field_name)
-                #Override value with transform_ methods
-                method = getattr(self, 'transform_%s' % field_name, None)
-                if callable(method):
-                    value = method(obj, value)
-                if not getattr(field, 'write_only', False):
-                    ret[key] = value
-                ret.fields[key] = self.augment_field(field, field_name, key, value)
+    def get_field_info(self, model):
+        return get_field_info(model)
+
+    def get_fields(self):
+        #fields declared on Serializer (e.g. Name = CharField() in class definition)
+        declared_fields = copy.deepcopy(self._declared_fields)
+
+        #instantiate return OrderedDictionary
+        ret = OrderedDict()
+
+        #get info from Meta
+        model = getattr(self.Meta, 'model') #model for serializer
+        fields = getattr(self.Meta, 'fields', None) #explicit list of fields
+        exclude = getattr(self.Meta, 'exclude', None) #list of fields to exclude
+        depth = getattr(self.Meta, 'depth', 0) #depth to crawl to
+
+        #format extra kwargs
+        extra_kwargs = self.get_extra_kwargs()
+
+        #check fields and exclude, make sure they didn't do anything stupid
+        if fields and not isinstance(fields, (list, tuple)):
+            raise TypeError(
+                'The `fields` option must be a list or tuple. Got %s.' %
+                type(fields).__name__
+            )
+
+        if exclude and not isinstance(exclude, (list, tuple)):
+            raise TypeError(
+                'The `exclude` option must be a list or tuple. Got %s.' %
+                type(exclude).__name__
+            )
+
+        assert not (fields and exclude), "Cannot set both 'fields' and 'exclude'."
+
+        # # Retrieve metadata about fields & relationships on the model class.
+        info = self.get_field_info(model)
+
+        fields = self.get_default_field_names(declared_fields, info)
+
+        # Determine the set of model fields, and the fields that they map to.
+        # We actually only need this to deal with the slightly awkward case
+        # of supporting `unique_for_date`/`unique_for_month`/`unique_for_year`.
+        model_field_mapping = {}
+        embedded_list = []
+        #for all fields we're going to serialize..
+        for field_name in fields:
+            if field_name in declared_fields:
+                #if we declared it, get the source from the field we declared (or use field_name as default)
+                field = declared_fields[field_name]
+                source = field.source or field_name
+                if isinstance(field, EmbeddedDocumentSerializer):
+                    embedded_list.append(field)
+            else:
+                #fields we didn't define in Serializer class (and are being built from the model)
+                #get source from extra_kwargs, or use field_name as default.
+                try:
+                    source = extra_kwargs[field_name]['source']
+                except KeyError:
+                    source = field_name
+            # Model fields will always have a simple source mapping,
+            # they can't be nested attribute lookups.
+            if '.' not in source and source != '*':
+                model_field_mapping[source] = field_name
+
+        #only includes EmbeddedDocumentSerializers specifically defined in declared_fields
+        #everything else will be using an EmbeddedDocumentField (or similar)
+        self.embedded_document_serializer_fields = embedded_list
+
+        #Now determine the fields that should be included on the serializer.
+        for field_name in fields:
+            if field_name in declared_fields:
+                # Field is explicitly declared on the class, use that.
+                ret[field_name] = declared_fields[field_name]
+                continue
+
+            elif field_name in info.fields_and_pk:
+                # Create regular model fields.
+                model_field = info.fields_and_pk[field_name]
+                field_cls = self.get_field_mapping(model_field)
+                if field_cls is None:
+                    raise KeyError('%s is not supported, yet. Please open a ticket regarding '
+                                   'this issue and have it fixed asap.\n'
+                                   'https://github.com/umutbozkurt/django-rest-framework-mongoengine/issues/' %
+                                   type(model_field))
+
+                kwargs = self.get_field_kwargs(model_field)
+
+            elif hasattr(model, field_name):
+                #if not a field, but exists on the model,
+                # Create a read only field for model methods and properties.
+                field_cls = drf_fields.ReadOnlyField
+                kwargs = {}
+
+            else:
+                #bad ju-ju. Shouldn't get here (as all fields should be explicitly declared or part of model
+                raise ImproperlyConfigured(
+                    'Field name `%s` is not valid for model `%s`.' %
+                    (field_name, model.__class__.__name__)
+                )
+
+            # Check that any fields declared on the class are
+            # also explicitly included in `Meta.fields`.
+            missing_fields = set(declared_fields.keys()) - set(fields)
+            if missing_fields:
+                missing_field = list(missing_fields)[0]
+                raise ImproperlyConfigured(
+                    'Field `%s` has been declared on serializer `%s`, but '
+                    'is missing from `Meta.fields`.' %
+                    (missing_field, self.__class__.__name__)
+                )
+
+            # Populate any kwargs defined in `Meta.extra_kwargs`
+            extras = extra_kwargs.get(field_name, {})
+            if extras.get('read_only', False):
+                #if defined as read_only, drop any kwargs that don't work with that
+                #from kwargs that will be passed to field's init
+                for attr in [
+                    'required', 'default', 'allow_blank', 'allow_null',
+                    'min_length', 'max_length', 'min_value', 'max_value',
+                    'validators', 'queryset'
+                ]:
+                    kwargs.pop(attr, None)
+
+            if extras.get('default') and kwargs.get('required') is False:
+                kwargs.pop('required')
+
+            kwargs.update(extras)
+
+            # Create the serializer field, finally.
+            ret[field_name] = field_cls(**kwargs)
 
         return ret
 
-    def from_native(self, data, files=None):
-        self._errors = {}
-
-        if data is not None or files is not None:
-            attrs = self.restore_fields(data, files)
-            for key in data.keys():
-                if key not in attrs:
-                    attrs[key] = data[key]
-            if attrs is not None:
-                attrs = self.perform_validation(attrs)
-        else:
-            self._errors['non_field_errors'] = ['No input provided']
-
-        if not self._errors:
-            return self.restore_object(attrs, instance=getattr(self, 'object', None))
-
-    @property
-    def data(self):
+    def is_valid(self, raise_exception=False):
         """
-        Returns the serialized data on the serializer.
+        Call super.is_valid() and then apply embedded document serializer's validations.
         """
-        if self._data is None:
-            obj = self.object
+        valid = super(DocumentSerializer, self).is_valid(raise_exception=raise_exception)
 
-            if self.many is not None:
-                many = self.many
-            else:
-                many = hasattr(obj, '__iter__') and not isinstance(obj, (BaseDocument, Page, dict))
-                if many:
-                    warnings.warn('Implicit list/queryset serialization is deprecated. '
-                                  'Use the `many=True` flag when instantiating the serializer.',
-                                  DeprecationWarning, stacklevel=2)
+        for embedded_field in self.embedded_document_serializer_fields:
+            embedded_field._initial_data = self.validated_data.pop(embedded_field.field_name, serializers.empty)
+            valid &= embedded_field.is_valid(raise_exception=raise_exception)
 
-            if many:
-                self._data = [self.to_native(item) for item in obj]
-            else:
-                self._data = self.to_native(obj)
+        return valid
 
-        return self._data
+    def to_representation(self, instance):
+        """
+        Object instance -> Dict of primitive datatypes.
+        """
+        #instantiate return dict
+        ret = OrderedDict()
 
+        #get list of fields from self.fields.values()
+        fields = [field for field in self.fields.values() if not field.write_only]
 
-class HyperlinkedModelSerializerOptions(MongoEngineModelSerializerOptions):
-    """
-    Options for HyperlinkedModelSerializer
-    """
-    def __init__(self, meta):
-        super(HyperlinkedModelSerializerOptions, self).__init__(meta)
-        self.view_name = getattr(meta, 'view_name', None)
-        self.lookup_field = getattr(meta, 'lookup_field', None)
-        self.url_field_name = getattr(meta, 'url_field_name', api_settings.URL_FIELD_NAME)  # todo change back to id for json-ld
+        for field in fields:
+                try:
+                    #get attribute from field
+                    #probably primitive datatype for simple fields (text, int, etc)
+                    #possibly something more complicated for objects, lists, or whatnot.
+                    attribute = field.get_attribute(instance)
+                except SkipField:
+                    continue
 
+                if attribute is None:
+                    # We skip `to_representation` for `None` values so that
+                    # fields do not have to explicitly deal with that case.
+                    ret[field.field_name] = None
+                else:
+                    #pass the attribute to the to_representation function to get final representation
+                    #of the data.
+                    ret[field.field_name] = field.to_representation(attribute)
 
-class MongoEngineHyperlinkedIdentityField(HyperlinkedIdentityField):
-    lookup_field = 'id'
+        return ret
 
+    def create(self, validated_data):
+        """
+        Create an instance using queryset.create()
+        Before create() on self, call EmbeddedDocumentSerializer's create() first. If exists.
+        """
+        raise_errors_on_nested_writes('create', self, validated_data)
 
-class MongoHyperlinkedRelatedField(HyperlinkedRelatedField):
-    lookup_field = 'id'
-    def initialize(self, parent, field_name):
-        super(RelatedField, self).initialize(parent, field_name)
-        if self.queryset is None and not self.read_only:
-            manager = getattr(self.parent.opts.model, self.source or field_name)
-            self.queryset = manager.document_type.objects.all()
+        # Automagically create and set embedded documents to validated data
+        for embedded_field in self.embedded_document_serializer_fields:
+            embedded_doc_intance = embedded_field.create(embedded_field.validated_data)
+            validated_data[embedded_field.field_name] = embedded_doc_intance
 
-
-class HyperlinkedModelSerializer(MongoEngineModelSerializer):
-    """
-    A subclass of ModelSerializer that uses hyperlinked relationships,
-    instead of primary key relationships.
-    """
-    _options_class = HyperlinkedModelSerializerOptions
-    _default_view_name = '%(model_name)s-detail'
-    _hyperlink_field_class = MongoHyperlinkedRelatedField
-    _hyperlink_identify_field_class = MongoEngineHyperlinkedIdentityField
-
-    def get_default_fields(self):
-        fields = super(HyperlinkedModelSerializer, self).get_default_fields()
-
-        if self.opts.view_name is None:
-            self.opts.view_name = self._get_default_view_name(self.opts.model)
-
-        if self.opts.url_field_name not in fields:
-            url_field = self._hyperlink_identify_field_class(
-                view_name=self.opts.view_name,
-                lookup_field=self.opts.lookup_field
+        ModelClass = self.Meta.model
+        try:
+            instance = ModelClass(**validated_data)
+            instance.save()
+        except TypeError as exc:
+            msg = (
+                'Got a `TypeError` when calling `%s.objects.create()`. '
+                'This may be because you have a writable field on the '
+                'serializer class that is not a valid argument to '
+                '`%s.objects.create()`. You may need to make the field '
+                'read-only, or override the %s.create() method to handle '
+                'this correctly.\nOriginal exception text was: %s.' %
+                (
+                    ModelClass.__name__,
+                    ModelClass.__name__,
+                    type(self).__name__,
+                    exc
+                )
             )
-            ret = self._dict_class()
-            ret[self.opts.url_field_name] = url_field
-            ret.update(fields)
-            fields = ret
+            raise TypeError(msg)
+        except me_ValidationError as exc:
+            msg = (
+                'Got a `ValidationError` when calling `%s.objects.create()`. '
+                'This may be because request data satisfies serializer validations '
+                'but not Mongoengine`s. You may need to check consistency between '
+                '%s and %s.\nIf that is not the case, please open a ticket '
+                'regarding this issue on https://github.com/umutbozkurt/django-rest-framework-mongoengine/issues'
+                '\nOriginal exception was: %s' %
+                (
+                    ModelClass.__name__,
+                    ModelClass.__name__,
+                    type(self).__name__,
+                    exc
+                )
+            )
+            raise me_ValidationError(msg)
 
-        return fields
+        return instance
 
-    def get_pk_field(self, model_field):
-        if self.opts.fields and model_field.name in self.opts.fields:
-            return self.get_field(model_field)
-
-    def get_related_field(self, model_field, related_model, to_many):
+    def update(self, instance, validated_data):
         """
-        Creates a default instance of a flat relational field.
+        Update embedded fields first, set relevant attributes with updated data
+        And then continue regular updating
         """
-        # TODO: filter queryset using:
-        # .using(db).complex_filter(self.rel.limit_choices_to)
-        kwargs = {
-            'queryset': related_model._default_manager,
-            'view_name': self._get_default_view_name(related_model),
-            'many': to_many
-        }
+        for embedded_field in self.embedded_document_serializer_fields:
+            embedded_doc_intance = embedded_field.update(getattr(instance, embedded_field.field_name), embedded_field.validated_data)
+            setattr(instance, embedded_field.field_name, embedded_doc_intance)
 
-        if model_field:
-            kwargs['required'] = not(model_field.null or model_field.blank)
-            if model_field.help_text is not None:
-                kwargs['help_text'] = model_field.help_text
-            if model_field.verbose_name is not None:
-                kwargs['label'] = model_field.verbose_name
+        return super(DocumentSerializer, self).update(instance, validated_data)
 
-        if self.opts.lookup_field:
-            kwargs['lookup_field'] = self.opts.lookup_field
 
-        return self._hyperlink_field_class(**kwargs)
+subclass_serializers = {}
 
-    def get_identity(self, data):
-        """
-        This hook is required for bulk update.
-        We need to override the default, to use the url as the identity.
-        """
-        try:
-            return data.get(self.opts.url_field_name, None)
-        except AttributeError:
-            return None
+class ChainableDocumentSerializer(DocumentSerializer):
 
-    def _get_default_view_name(self, model):
-        """
-        Return the view name to use if 'view_name' is not specified in 'Meta'
-        """
-        model_meta = model._meta
-        format_kwargs = {
-            'app_label': model_meta['collection'],
-            'model_name': model_meta['collection'].lower()
-        }
-        return self._default_view_name % format_kwargs
+    @classmethod
+    def register_serializer(cls, serializer):
+        if cls not in subclass_serializers.keys():
+            subclass_serializers[cls] = {}
 
-    @property
-    def data(self):
+        kls = serializer.Meta.model
+        if kls is not cls.Meta.model and issubclass(kls, cls.Meta.model):
+            subclass_serializers[cls][kls] = serializer
+        else:
+            raise Exception("Don't do that, yo.")
+
+    def get_serializer(self, kls):
+        #if no serializers have been registered for us to use, just return self
+        if self.__class__ not in subclass_serializers.keys():
+            return super(ChainableDocumentSerializer, self)
+
+        for klz in inspect.getmro(kls):
+            if klz in subclass_serializers[self.__class__].keys():
+                serializer = subclass_serializers[self.__class__][klz]
+                if type(serializer) is serializers.SerializerMetaclass:
+                    #instantiate now, since there's a context we can pass along.
+                    serializer = serializer(context=self._context)
+                    subclass_serializers[self.__class__][klz] = serializer
+                return serializer
+
+        #if a better serializer is not found, return self as default
+        return super(ChainableDocumentSerializer, self)
+
+
+    def to_internal_value(self, data):
         """
-        Returns the serialized data on the serializer.
+        Dict of native values <- Dict of primitive datatypes.
         """
-        if self._data is None:
-            if hasattr(self.object, 'no_dereference'):
-                obj = self.object.no_dereference()
+        if not isinstance(data, dict):
+            message = self.error_messages['invalid'].format(
+                datatype=type(data).__name__
+            )
+            raise drf_fields.ValidationError({
+                api_settings.NON_FIELD_ERRORS_KEY: [message]
+            })
+
+        if data.get('_cls', None):
+            cls = get_document(data['_cls'])
+        else:
+            cls = self.Meta.model
+
+        return self.get_serializer(cls).to_internal_value(data)
+
+    def to_representation(self, instance):
+        """
+        Object instance -> Dict of primitive datatypes.
+        """
+
+        #get class of instance
+        cls = instance.__class__
+        #find subclass serializer if one exists
+        return self.get_serializer(cls).to_representation(instance)
+
+    def create(self, validated_data):
+        class_name = validated_data.pop('_class_name', None)
+        if class_name:
+            cls = get_document(class_name)
+        else:
+            cls = self.Meta.model
+
+        return self.get_serializer(cls).create(validated_data)
+
+
+class PolymorphicDocumentSerializer(DocumentSerializer):
+    def __init__(self, *args, **kwargs):
+        self.field_mapping[me_fields.EmbeddedDocumentField] = PolymorphicEmbeddedDocumentField
+        super(PolymorphicDocumentSerializer, self).__init__(*args, **kwargs)
+        self.chainmap = PolymorphicChainMap(self, self.fields)
+
+    def to_internal_value(self, data):
+        """
+        Dict of native values <- Dict of primitive datatypes.
+        """
+        if not isinstance(data, dict):
+            message = self.error_messages['invalid'].format(
+                datatype=type(data).__name__
+            )
+            raise drf_fields.ValidationError({
+                api_settings.NON_FIELD_ERRORS_KEY: [message]
+            })
+
+        ret = OrderedDict()
+        errors = OrderedDict()
+
+        if data['_cls']:
+            cls = get_document(data['_cls'])
+            if not issubclass(cls, self.Meta.model):
+                #not playing the 'pass anything in, and we'll construct it for you' game
+                cls = self.Meta.model
+        else:
+            cls = self.Meta.model
+
+        fields = self.chainmap[cls]
+
+        fields = [field for name, field in fields.items() if not field.read_only]
+
+        for field in fields:
+            validate_method = getattr(self, 'validate_' + field.field_name, None)
+            primitive_value = field.get_value(data)
+            try:
+                validated_value = field.run_validation(primitive_value)
+                if validate_method is not None:
+                    validated_value = validate_method(validated_value)
+            except drf_fields.ValidationError as exc:
+                errors[field.field_name] = exc.detail
+            except drf_fields.DjangoValidationError as exc:
+                errors[field.field_name] = list(exc.messages)
+            except SkipField:
+                pass
             else:
-                obj = self.object
+                drf_fields.set_value(ret, field.source_attrs, validated_value)
 
-            if self.many is not None:
-                many = self.many
+        if errors:
+            raise drf_fields.ValidationError(errors)
+
+        return ret
+
+
+    def to_representation(self, instance):
+        """
+        Object instance -> Dict of primitive datatypes.
+        """
+        #instantiate return dict
+        ret = OrderedDict()
+
+
+        #get list of fields from self.fields.values()
+        cls = instance.__class__
+        fields = self.chainmap[cls]
+
+        fields = {name: field for name, field in fields.items() if not field.write_only}
+        d = {name: (field.source, field.source_attrs) for name, field in fields.items()}
+
+        for field_name, field in fields.items():
+            if field_name in self._declared_fields or field.source in instance._fields:
+                try:
+                    #get attribute from field
+                    #probably primitive datatype for simple fields (text, int, etc)
+                    #possibly something more complicated for objects, lists, or whatnot.
+                    attribute = field.get_attribute(instance)
+                except (SkipField):
+                    continue
+
+                if attribute is None:
+                    # We skip `to_representation` for `None` values so that
+                    # fields do not have to explicitly deal with that case.
+                    ret[fields[field_name].field_name] = None
+                else:
+                    #pass the attribute to the to_representation function to get final representation
+                    #of the data.
+                    ret[fields[field_name].field_name] = fields[field_name].to_representation(attribute)
+
+        return ret
+
+class DynamicDocumentSerializer(DocumentSerializer):
+    """
+    DocumentSerializer adjusted for DynamicDocuments.
+    """
+    def to_internal_value(self, data):
+        """
+        Dict of native values <- Dict of primitive datatypes.
+        After calling super, we handle dynamic data which is not handled by super class
+        """
+        ret = super(DocumentSerializer, self).to_internal_value(data)
+        [drf_fields.set_value(ret, [k], data[k]) for k in data if k not in ret]
+        return ret
+
+    def to_representation(self, instance):
+        """
+        Object instance -> Dict of primitive datatypes.
+        Serialize regular + dynamic fields
+        """
+        ret = OrderedDict()
+        fields = [field for field in self.fields.values() if not field.write_only]
+        fields += self._get_dynamic_fields(instance).values()
+
+        for field in fields:
+            attribute = field.get_attribute(instance)
+            if attribute is None:
+                ret[field.field_name] = None
             else:
-                many = hasattr(obj, '__iter__') and not isinstance(obj, (BaseDocument, Page, dict))
-                if many:
-                    warnings.warn('Implicit list/queryset serialization is deprecated. '
-                                  'Use the `many=True` flag when instantiating the serializer.',
-                                  DeprecationWarning, stacklevel=2)
+                ret[field.field_name] = field.to_representation(attribute)
 
-            if many:
-                self._data = [self.to_native(item) for item in obj]
-            else:
-                self._data = self.to_native(obj)
+        return ret
 
-        return self._data
+    def _get_dynamic_fields(self, document):
+        dynamic_fields = {}
+        if document is not None and document._dynamic:
+            for name, field in document._dynamic_fields.items():
+                dynamic_fields[name] = DynamicField(field_name=name, source=name, **self.get_field_kwargs(field))
+        return dynamic_fields
 
 
-def lookup_uri(self):
-    view = self.context.get('view', None)
-    lookup_field = view.lookup_field if view else 'id'
-    request = self.context.get('request', None)
-    format = self.context.get('format', None)
+class EmbeddedDocumentSerializer(DocumentSerializer):
+    """
+    A DocumentSerializer adjusted to have extended control over serialization and validation of EmbeddedDocuments.
+    """
 
-    def uri(cls, id):
-        try:
-            kwargs = {lookup_field: str(id)}
-            view_name = self._default_view_name % {'model_name': cls.lower()}
-            return reverse(view_name, kwargs=kwargs, request=request, format=format)
-        except NoReverseMatch:
-            return '{1}'.format(cls, id)
-    return uri
+    def create(self, validated_data):
+        """
+        EmbeddedDocuments are not saved separately, so we create an instance of it.
+        """
+        raise_errors_on_nested_writes('create', self, validated_data)
+        return self.Meta.model(**validated_data)
+
+    def update(self, instance, validated_data):
+        """
+        EmbeddedDocuments are not saved separately, so we just update the instance and return it.
+        """
+        raise_errors_on_nested_writes('update', self, validated_data)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        return instance
+
+    def _get_default_field_names(self, declared_fields, model_info):
+        """
+        EmbeddedDocuments don't have `id`s so do not include `id` to field names
+        """
+        return (
+            list(declared_fields.keys()) +
+            list(model_info.fields.keys()) +
+            list(model_info.forward_relations.keys())
+        )

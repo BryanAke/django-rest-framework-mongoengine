@@ -1,91 +1,51 @@
-Mongoengine Model Serializer
-======================
+Django Rest Framework Mongoengine
+===============================
 
-***Model Serializer*** that supports ***MongoEngine***, for ***Django Rest Framework***.
+***Mongoengine*** support for ***Django Rest Framework***.
 
------------------
-Usage
---------
-```python
-# model
-class Blog(Document):
-    owner = ReferenceField(User)
-    title = StringField()
-    extensions = ListField(EmbeddedDocument(BlogExtension))
-    tags = ListField(StringField())
-    approved = BooleanField()
+# DRF 3
+Starting from `version 2.0`, this package will be developed using `DRF 3.0` and higher. 
 
-# serializer
-from rest_framework_mongoengine.serializers import MongoEngineModelSerializer
+# DRF 2
+If you want to use `DRFME` with `DRF 2`, you should `version 1.*`. Development will be continued on `drf_2_support` branch.
 
-class BlogSerializer(MongoEngineModelSerializer):
+## Documentation
+See full documentation [here](https://pythonhosted.org/django-rest-framework-mongoengine/)
+### DocumentSerializer
+`DocumentSerializer` works just like as `DRF Model Serializer`. Your model fields are converted to relevant serializer fields automatically. If you want custom behavior, you can use `nested serializers`.
+```Python
+from rest_framework_mongoengine.serializers import DocumentSerializer
+
+class BlogSerializer(DocumentSerializer):
     class Meta:
         model = Blog
-        depth = 2
-        exclude = ('approved', )
-        
-# urls
-urlpatterns = patterns('',
-    url(r'^blog/$', views.BlogList.as_view()),
-    url(r'^blog/(?P<id>[0-9a-z]+)/$', views.BlogDetail.as_view()),
-)
-
-# views
-from rest_framework_mongoengine.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
-
-class BlogList(ListCreateAPIView):
-    queryset = Blog.objects.all()
-    serializer_class = BlogSerializer
-
-class BlogDetail(RetrieveUpdateDestroyAPIView):
-    queryset = Blog.objects.all()
-    serializer_class = BlogSerializer
+        fields = ('id', 'author', 'name', 'date_created')
 ```
-**Notes:** 
+### DynamicDocumentSerializer
+A `DocumentSerializer` for dynamic documents.
+### EmbeddedDocumentSerializer
+`EmbeddedDocumentSerializer` is used to customize `EmbeddedDocument` behavior, and make `validations` accurately. It is mentioned extensively on the [documentation](https://pythonhosted.org/django-rest-framework-mongoengine/serializers/#embeddeddocumentserializer)
+### Generic Views
+`Generic Views` are named exactly the same as `DRF Generic Views`. 
 
- - MongoEngine Model Serializer also supports  ***DynamicDocument***. 
- - `Depth` is optional and defaults to 5. It is used for ***ReferenceField*** & ***ListField***.
+Just make sure you are using `DRFME Generics`.
 
-Sample Output
----------
+`from rest_framework_mongoengine import generics`
 
-![Sample Output][1]
+## Installation
+`pip install django-rest-framework-mongoengine`
 
------------------
-Install
----------
-``` pip install django-rest-framework-mongoengine```
+**Note:** You might consider using a specific version.
 
------------------
-Install as package
------------------
-You can use this library as a package to your project:
-
- - Step 1: Installing required files
-``` pip install -r requirements.txt```
- - Step 2: make sure you're having a mongodb running locally:
-```/bin/mongod --dbpath [path_to_data/db/]```
- - Step 3: Create users and table in dbsqlite and django admin:
-``` python manage.py syncdb```
- - Step 4: Run the SampleApp demo:
-``` python manage.py runserver```
-
-Then run <b>http://localhost:8000/</b> on your favorite browser to test the interface
-
------------------
-Requirements
------------------
- 
- - [MongoEngine][2]
- - [Django Rest Framework][3]
- 
------------------
-License
------------------
-See [LICENSE][4]
+***For clarity:***
+- DRF2 support: `pip install "django-rest-framework-mongoengine<2.0"`
+- DRF3 support: `pip install "django-rest-framework-mongoengine>=2.0"`
 
 
-  [1]: https://lh6.googleusercontent.com/-vv4lo9TXrgA/U8gfzWS3tzI/AAAAAAAAAE0/Xqum8YjrSqk/w570-h521-no/Screen+Shot+2014-07-17+at+22.06.43.png
-  [2]: http://mongoengine.org/
-  [3]: http://www.django-rest-framework.org/
-  [4]: https://github.com/umutbozkurt/django-rest-framework-mongoengine/blob/master/LICENSE
+Don't forget to add the package to installed apps.
+```Python
+INSTALLED_APPS = (
+    ...
+    'rest_framework_mongoengine',
+)
+```

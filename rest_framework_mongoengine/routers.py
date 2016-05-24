@@ -8,9 +8,6 @@ class MongoRouterMixin(object):
         it from the viewset.
         """
         model_cls = getattr(viewset, 'model', None)
-        queryset = getattr(viewset, 'queryset', None)
-        if model_cls is None and queryset is not None:
-            model_cls = queryset.model
 
         assert model_cls, '`base_name` argument not specified, and could ' \
             'not automatically determine the name from the viewset, as ' \
@@ -24,3 +21,10 @@ class MongoSimpleRouter(MongoRouterMixin, SimpleRouter):
 
 class MongoDefaultRouter(MongoSimpleRouter, DefaultRouter):
     pass
+
+
+REGISTRY = []
+class GlobalRegistryMixin(object):
+    def __init__(self, *args, **kwargs):
+        super(GlobalRegistryMixin, self).__init__(*args, **kwargs)
+        self.registry = REGISTRY

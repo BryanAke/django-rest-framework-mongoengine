@@ -3,48 +3,59 @@ import mongoengine as me
 from unittest import TestCase
 from bson import objectid
 
-from rest_framework_mongoengine.serializers import MongoEngineModelSerializer
-from rest_framework import serializers as s
+from django.conf import settings
 
+from rest_framework import fields as drf_fields
 
-class Job(me.Document):
-    title = me.StringField()
-    status = me.StringField(choices=('draft', 'published'))
-    notes = me.StringField(required=False)
-    on = me.DateTimeField(default=datetime.utcnow)
-    weight = me.IntField(default=0)
+from rest_framework_mongoengine.serializers import DocumentSerializer, PolymorphicDocumentSerializer
+from test_models import Vehicle, Car, Truck, Mileage, FuelMileage
 
-
-class JobSerializer(MongoEngineModelSerializer):
-    id = s.Field()
-    title = s.CharField()
-    status = s.ChoiceField(read_only=True)
-    sort_weight = s.IntegerField(source='weight')
-
+class VehicleSerializer(DocumentSerializer):
 
     class Meta:
-        model = Job 
-        fields = ('id', 'title','status', 'sort_weight')
+        model = Vehicle
 
+class TestDocumentSerializer(TestCase):
 
-
-class TestReadonlyRestore(TestCase):
-
-    def test_restore_object(self):
-        job = Job(title='original title', status='draft', notes='secure')
+    def test_serializes_object(self):
         data = {
-            'title': 'updated title ...',
-            'status': 'published',  # this one is read only
-            'notes': 'hacked', # this field should not update
-            'sort_weight': 10 # mapped to a field with differet name
+            'id': None,
+            'name': 'DMC 12',
+            'manufacturer': 'Delorean Motor Company',
+            'weight': 4000
         }
+        vehicle = Vehicle(name='DMC 12', manufacturer='Delorean Motor Company', weight=4000)
 
-        serializer = JobSerializer(job, data=data, partial=True)
+        serializer = VehicleSerializer(instance=vehicle)
+        d = serializer.data
+        self.assertDictEqual(d, data)
 
-        self.assertTrue(serializer.is_valid())
-        obj = serializer.object 
-        self.assertEqual(data['title'], obj.title)
-        self.assertEqual('draft', obj.status)
-        self.assertEqual('secure', obj.notes)
+    def test_create_object(self):
+        data = {
+            'id': None,
+            'name': 'DMC 12',
+            'manufacturer': 'Delorean Motor Company',
+            'weight': 4000
+        }
+        vehicle = Vehicle(name='DMC 12', manufacturer='Delorean Motor Company', weight=4000)
 
-        self.assertEqual(10, obj.weight)
+        serializer = VehicleSerializer()
+        i = serializer.create(data)
+        self.assertEqual(i.name, vehicle.name)
+        self.assertEqual(i.weight, vehicle.weight)
+        self.assertEqual(i.manufacturer, vehicle.manufacturer)
+
+        i.delete()
+
+    def test_fields_population(self):
+        serializer = VehicleSerializer()
+        f = serializer.fields
+
+        #should be 4 fields when populated from model
+        self.assertTrue(len(f) == 4)
+
+        self.assertListEqual(f.keys(), ['id', 'name', 'weight', 'manufacturer'])
+
+        self.assertTrue(isinstance(f['weight'], drf_fields.IntegerField))
+        self.assertTrue(isinstance(f['name'], drf_fields.CharField))
+        self.assertTrue(isinstance(f['weight'], drf_fields.IntegerField))
