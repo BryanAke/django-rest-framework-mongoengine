@@ -550,9 +550,11 @@ class ChainableDocumentSerializer(DocumentSerializer):
         return self.get_serializer(cls).to_representation(instance)
 
     def create(self, validated_data):
-        class_name = validated_data.pop('_class_name', None)
+        class_name = validated_data.get('_class_name', None)
         if class_name:
             cls = get_document(class_name)
+            if cls is self.Meta.model:
+                validated_data.pop('_class_name', None)
         else:
             cls = self.Meta.model
 
