@@ -262,7 +262,7 @@ class DocumentSerializer(serializers.ModelSerializer):
         #get info from Meta
         model = getattr(self.Meta, 'model') #model for serializer
         fields = getattr(self.Meta, 'fields', None) #explicit list of fields
-        exclude = getattr(self.Meta, 'exclude', None) #list of fields to exclude
+        exclude = getattr(self.Meta, 'exclude', []) #list of fields to exclude
         depth = getattr(self.Meta, 'depth', 0) #depth to crawl to
 
         #format extra kwargs
@@ -286,7 +286,8 @@ class DocumentSerializer(serializers.ModelSerializer):
         # # Retrieve metadata about fields & relationships on the model class.
         info = self.get_field_info(model)
 
-        fields = self.get_default_field_names(declared_fields, info)
+        if fields is None:
+            fields = self.get_default_field_names(declared_fields, info)
 
         # Determine the set of model fields, and the fields that they map to.
         # We actually only need this to deal with the slightly awkward case
@@ -319,6 +320,10 @@ class DocumentSerializer(serializers.ModelSerializer):
 
         #Now determine the fields that should be included on the serializer.
         for field_name in fields:
+            if field_name in exclude:
+                # If field_name is listed in Meta.exclude, skip it.
+                continue
+
             if field_name in declared_fields:
                 # Field is explicitly declared on the class, use that.
                 ret[field_name] = declared_fields[field_name]
