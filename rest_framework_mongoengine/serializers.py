@@ -320,13 +320,14 @@ class DocumentSerializer(serializers.ModelSerializer):
 
         #Now determine the fields that should be included on the serializer.
         for field_name in fields:
-            if field_name in exclude:
-                # If field_name is listed in Meta.exclude, skip it.
-                continue
 
             if field_name in declared_fields:
                 # Field is explicitly declared on the class, use that.
                 ret[field_name] = declared_fields[field_name]
+                continue
+
+            if field_name in exclude:
+                # If field_name is listed in Meta.exclude, skip it.
                 continue
 
             elif field_name in info.fields_and_pk:
