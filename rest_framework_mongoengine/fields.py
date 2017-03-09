@@ -237,7 +237,7 @@ class ListField(DocumentField):
         nested_field_instance = self.model_field.field
         #initialize field
         return {
-            self.model_field.name: self.get_subfield(nested_field_instance)
+            self.field_name: self.get_subfield(nested_field_instance)
         }
 
     def get_value(self, dictionary):
@@ -255,7 +255,7 @@ class ListField(DocumentField):
         List of dicts of native values <- List of dicts of primitive datatypes.
         """
 
-        serializer_field = self.fields[self.model_field.name]
+        serializer_field = self.fields[self.field_name]
 
         if html.is_html_input(data):
             data = html.parse_html_list(data)
@@ -265,7 +265,7 @@ class ListField(DocumentField):
 
     def get_attribute(self, instance):
         #since this is a passthrough, be careful about dereferencing the contents.
-        serializer_field = self.fields[self.model_field.name]
+        serializer_field = self.fields[self.field_name]
         if not self.dereference_refs and isinstance(serializer_field, ReferenceField):
             #return data by grabbing it directly, instead of going through the field's __get__ method
             return instance._data[self.source]
@@ -273,7 +273,7 @@ class ListField(DocumentField):
 
 
     def to_representation(self, value):
-        serializer_field = self.fields[self.model_field.name]
+        serializer_field = self.fields[self.field_name]
         return [serializer_field.to_representation(v) for v in value]
 
 
@@ -285,7 +285,7 @@ class MapField(ListField):
         List of dicts of native values <- List of dicts of primitive datatypes.
         """
 
-        serializer_field = self.fields[self.model_field.name]
+        serializer_field = self.fields[self.field_name]
 
         if html.is_html_input(data):
             data = html.parse_html_list(data)
@@ -298,7 +298,7 @@ class MapField(ListField):
         return native
 
     def to_representation(self, value):
-        serializer_field = self.fields[self.model_field.name]
+        serializer_field = self.fields[self.field_name]
 
         ret = OrderedDict()
         for key in value:
