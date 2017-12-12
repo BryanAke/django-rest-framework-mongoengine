@@ -504,7 +504,10 @@ class DictField(DocumentField):
                     sub_ret = OrderedDict()
                     for field in fields:
                         field_value = item._data[field]
-                        sub_ret[field] = fields[field].to_representation(field_value)
+                        if field_value is None:
+                            sub_ret[field] = None
+                        else:
+                            sub_ret[field] = fields[field].to_representation(field_value)
                     ret[key] = sub_ret
 
                 else:
